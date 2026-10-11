@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: discount-kata
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/discount}
+    username: ${DB_USER:discount}
+    password: ${DB_PASSWORD:discount}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI:http://localhost:8180/realms/discount}
+          # Keycloak puts the realm roles in a top-level "roles" claim (protocol mapper of the realm)
+          authorities-claim-name: roles
+          authority-prefix: ROLE_
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
