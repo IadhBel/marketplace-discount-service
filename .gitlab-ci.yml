@@ -1,0 +1,171 @@
+# Configuration comes from GitLab CI/CD variables; secrets are read from HashiCorp Vault at job runtime.
+#
+# GitLab CI/CD variables (Settings > CI/CD > Variables), none of them secret:
+#   VAULT_SERVER_URL, VAULT_AUTH_ROLE, VAULT_AUTH_PATH  Vault JWT authentication
+#   SONAR_HOST_URL, SONAR_PROJECT_KEY                   SonarQube server and project
+#
+# Vault secrets (KV v2 engine mounted at "secret", path "discount-kata/ci"):
+#   sonar_token, nvd_api_key
+
+stages:
+  - build
+  - test
+  - quality
+  - package
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+variables:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE/backend"
+
+default:
+  image: eclipse-temurin:25-jdk
+  cache:
+    key:
+      files:
+        - backend/build.gradle
+        - gradle/wrapper/gradle-wrapper.properties
+    paths:
+      - .gradle/caches
+      - .gradle/wrapper
+
+.vault:
+  id_tokens:
+    VAULT_ID_TOKEN:
+      aud: $VAULT_SERVER_URL
+
+.docker:
+  services:
+    - name: docker:27-dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+
+build:
+  stage: build
+  script:
+    - ./gradlew :backend:assemble
+  artifacts:
+    paths:
+      - backend/build/libs/
+    expire_in: 1 day
+
+format:
+  stage: build
+  script:
+    - ./gradlew :backend:spotlessCheck
+
+unit-tests:
+  stage: test
+  script:
+    - ./gradlew :backend:test
+  artifacts:
+    when: always
+    reports:
+      junit: backend/build/test-results/test/**/TEST-*.xml
+    paths:
+      - backend/build/jacoco/
+    expire_in: 1 day
+
+integration-tests:
+  stage: test
+  extends: .docker
+  variables:
+    # Testcontainers starts its containers on the Docker-in-Docker service
+    TESTCONTAINERS_HOST_OVERRIDE: "docker"
+  script:
+    - ./gradlew :backend:integrationTest
+  artifacts:
+    when: always
+    reports:
+      junit: backend/build/test-results/integrationTest/**/TEST-*.xml
+    paths:
+      - backend/build/jacoco/
+    expire_in: 1 day
+
+sonar:
+  stage: quality
+  extends: .vault
+  needs: [unit-tests, integration-tests]
+  secrets:
+    SONAR_TOKEN:
+      vault:
+        engine:
+          name: kv-v2
+          path: secret
+        path: discount-kata/ci
+        field: sonar_token
+      file: false
+      token: $VAULT_ID_TOKEN
+  script:
+    - ./gradlew :backend:compileJava :backend:compileTestJava :backend:jacocoTestReport :backend:sonar
+  rules:
+    - if: $SONAR_HOST_URL && $VAULT_SERVER_URL
+
+dependency-check:
+  stage: quality
+  extends: .vault
+  needs: []
+  secrets:
+    NVD_API_KEY:
+      vault:
+        engine:
+          name: kv-v2
+          path: secret
+        path: discount-kata/ci
+        field: nvd_api_key
+      file: false
+      token: $VAULT_ID_TOKEN
+  cache:
+    - key:
+        files:
+          - backend/build.gradle
+          - gradle/wrapper/gradle-wrapper.properties
+      paths:
+        - .gradle/caches
+        - .gradle/wrapper
+    # The NVD database is large: keep it between pipelines
+    - key: dependency-check-data
+      paths:
+        - .gradle/dependency-check-data
+  script:
+    - ./gradlew :backend:dependencyCheckAnalyze
+  artifacts:
+    when: always
+    paths:
+      - backend/build/reports/dependency-check-report.html
+    expire_in: 1 week
+  rules:
+    - if: $VAULT_SERVER_URL
+
+publish-image:
+  stage: package
+  image: docker:27
+  extends: .docker
+  needs: [build, format, unit-tests, integration-tests]
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -t "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA" -t "$IMAGE_NAME:$CI_COMMIT_REF_SLUG" backend
+    - docker push --all-tags "$IMAGE_NAME"
+
+# No deployment target is defined yet: the job only carries the triggering rules.
+deploy:
+  stage: deploy
+  needs: [publish-image]
+  environment:
+    name: $CI_COMMIT_REF_SLUG
+  script:
+    - echo "No deployment target configured yet for image $IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH
+      when: manual
+      allow_failure: true
