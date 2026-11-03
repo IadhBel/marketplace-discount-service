@@ -1,10 +1,12 @@
+# Shared configuration. Environment-specific values come from environment variables, or from a profile:
+# 'local' (application-local.yml) on a developer machine, 'it' for the integration tests.
 spring:
   application:
     name: discount-kata
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/discount}
-    username: ${DB_USER:discount}
-    password: ${DB_PASSWORD:discount}
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
   jpa:
     hibernate:
       ddl-auto: validate
@@ -15,7 +17,7 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: ${JWT_ISSUER_URI:http://localhost:8180/realms/discount}
+          issuer-uri: ${JWT_ISSUER_URI}
           # Keycloak puts the realm roles in a top-level "roles" claim (protocol mapper of the realm)
           authorities-claim-name: roles
           authority-prefix: ROLE_

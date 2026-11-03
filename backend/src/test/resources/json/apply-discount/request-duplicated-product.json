@@ -1,0 +1,7 @@
+{
+  "code": "SUMMER10",
+  "items": [
+    { "productId": "P-001", "quantity": 1 },
+    { "productId": "P-001", "quantity": 2 }
+  ]
+}

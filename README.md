@@ -18,7 +18,6 @@ Java 25, Spring Boot 4.1, Gradle (Groovy), PostgreSQL, Flyway, MapStruct, Spring
 ```
 .
 ├── backend/                 Spring Boot application (Gradle subproject), with its Dockerfile
-├── frontend/                Vue.js application (not started)
 ├── keycloak/                realm imported by the local Keycloak
 ├── docker-compose.yml       local PostgreSQL and Keycloak
 ├── .gitlab-ci.yml           CI/CD pipeline
@@ -37,18 +36,25 @@ The backend follows Clean Architecture with a hexagonal approach (Ports & Adapte
 
 ## Current status
 
-Implemented: Gradle project and Spring Boot skeleton (dependencies, configuration), local PostgreSQL and Keycloak with Docker Compose (not run yet).
+| Item | State |
+|---|---|
+| Project setup, Docker Compose (PostgreSQL, Keycloak), Dockerfile, CI/CD | Done (the pipeline has not run on GitLab yet) |
+| US-1 DISCOUNT-10001 — apply a discount code, secured with the `CUSTOMER` role | Coded; 50 unit and security tests run and pass; integration tests written, not run locally (they need Docker) |
+| US-2 DISCOUNT-10002 — restrict a code to certain products | Not started |
+| Vue.js frontend | Separate project and git repository (`../discount-frontend`), scaffold only |
 
-Not implemented yet: the discount feature (domain, application, persistence, REST API), its tests, and the Vue.js frontend required by the brief. The application cannot be started yet. The detailed status of each feature is tracked in [`BACKEND.md`](BACKEND.md), section 11.
+The detailed status of each story is tracked in [`BACKEND.md`](BACKEND.md), section 11.
 
 ## Useful commands
 
 All commands are run from the repository root.
 
 ```
-./gradlew :backend:build            # compile, test and check formatting
+./gradlew :backend:test             # unit and security tests (no infrastructure)
+./gradlew :backend:build            # compile, all tests (integration tests need Docker), format check
 ./gradlew :backend:spotlessApply    # format the code
 docker compose up -d                # start PostgreSQL and Keycloak locally
+./gradlew :backend:bootRun          # run the backend with the 'local' profile
 ```
 
 The GitLab pipeline (`.gitlab-ci.yml`) builds, tests, checks formatting, runs Sonar and OWASP Dependency-Check, then publishes the Docker image. Its configuration and secrets are described in [`BACKEND.md`](BACKEND.md), section 15.

@@ -99,7 +99,8 @@ Check order (the first failing check gives the error): existence of the code, va
 |---|---|
 | Unknown code | `DISCOUNT_CODE_NOT_FOUND` |
 | `active = false` | `DISCOUNT_CODE_INACTIVE` |
-| Before `startsAt` or from `expiresAt` on | `DISCOUNT_CODE_EXPIRED` |
+| Before `startsAt` | `DISCOUNT_CODE_NOT_YET_VALID` |
+| From `expiresAt` on | `DISCOUNT_CODE_EXPIRED` |
 | No eligible line | `NO_ELIGIBLE_PRODUCT` |
 
 The reference date comes from an injected `Clock` (testable), never from `Instant.now()` inside the domain.
@@ -159,7 +160,7 @@ Flow: `REST controller → ApplyDiscountUseCase (inbound port) → ApplyDiscount
   - `Money` wraps a 2-decimal `BigDecimal` and the HALF_UP rounding. It is kept only if it really simplifies the computations.
   - `DiscountCode` owns its validity rules (activation, dates) and product eligibility.
 - `DiscountPolicy`: pure domain service that computes the discount of a `Cart` for a `DiscountCode` (rules of section 2.4). It receives a `Clock` through its constructor, never a hard-coded `now()`.
-- Exceptions: `DiscountCodeNotFoundException`, `DiscountCodeInactiveException`, `DiscountCodeExpiredException`, `NoEligibleProductException`, `ProductNotFoundException`, `InvalidCartException` (cart invariants: empty cart, duplicated product, invalid quantity). They are mapped to HTTP status codes by the web adapter only.
+- Exceptions: `DiscountCodeNotFoundException`, `DiscountCodeInactiveException`, `DiscountCodeNotYetValidException`, `DiscountCodeExpiredException`, `NoEligibleProductException`, `ProductNotFoundException`, `InvalidCartException` (cart invariants: empty cart, duplicated product, invalid quantity). They are mapped to HTTP status codes by the web adapter only.
 
 **Application** — orchestration, one main use case.
 - Inbound port: `ApplyDiscountUseCase` (`ApplyDiscountResult apply(ApplyDiscountCommand)`).
@@ -173,7 +174,7 @@ Flow: `REST controller → ApplyDiscountUseCase (inbound port) → ApplyDiscount
 - `adapter/in/web`: REST controller (`DiscountController`), request/response DTOs, MapStruct mapper, `@RestControllerAdvice`. HTTP validation (Bean Validation) and mapping only.
 - `adapter/out/persistence`: JPA entities, Spring Data repositories, adapters implementing the outbound ports, MapStruct mapper JPA ↔ domain.
 - MapStruct is used at the REST and persistence boundaries, never to implement a business rule.
-- Lombok is limited to boilerplate (`@RequiredArgsConstructor` and `@Slf4j` on services and adapters). Domain models stay explicit (records or classes), without Lombok annotations that would hide invariants.
+- Lombok is limited to boilerplate (`@RequiredArgsConstructor` and `@Slf4j` on services and adapters, `@Getter` and a protected `@NoArgsConstructor` on JPA entities; see section 12). Domain models stay explicit (records or classes), without Lombok annotations that would hide invariants.
 
 **Shared / configuration**: bean declarations (`Clock`, `DiscountPolicy`, `ApplyDiscountService`), security (`SecurityConfiguration`), OpenAPI (TECH-1), in `shared/config`.
 
@@ -213,6 +214,7 @@ backend/src/main/java/com/carrefour/discountkata/
 │   │       ├── DiscountException.java       sealed root of the business errors
 │   │       ├── DiscountCodeNotFoundException.java
 │   │       ├── DiscountCodeInactiveException.java
+│   │       ├── DiscountCodeNotYetValidException.java
 │   │       ├── DiscountCodeExpiredException.java
 │   │       ├── NoEligibleProductException.java
 │   │       ├── ProductNotFoundException.java
@@ -243,7 +245,7 @@ backend/src/main/java/com/carrefour/discountkata/
 │       │       ├── mapper/
 │       │       │   └── DiscountWebMapper.java          MapStruct: DTO ↔ command / result
 │       │       ├── error/
-│       │       │   └── ApiExceptionHandler.java        exceptions → HTTP status + error code
+│       │       │   └── ApiExceptionHandler.java        @RestControllerAdvice, extends ResponseEntityExceptionHandler
 │       │       └── metrics/
 │       │           └── DiscountMetrics.java            [BONUS-1] business metrics
 │       └── out/
@@ -267,46 +269,54 @@ backend/src/main/java/com/carrefour/discountkata/
         └── OpenApiConfiguration.java        [TECH-1] bearer security scheme
 
 backend/src/main/resources/
-├── application.yml
+├── application.yml                     shared configuration, environment variables
+├── application-local.yml               'local' profile (docker-compose)
 └── db/
     └── migration/
-        ├── V1__create_schema.sql            product, discount_code, discount_code_product
-        └── V2__insert_demo_data.sql         demo products and codes (section 5)
+        ├── V1__create_schema.sql            product, discount_code (US-1)
+        ├── V2__insert_demo_data.sql         demo products and codes (US-1)
+        ├── V3__…                            discount_code_product (US-2)
+        └── V4__…                            demo restrictions (US-2)
 ```
 
-**Tests** (same packages as the production code)
+**Tests** (same packages as the production code). Unit tests and integration tests are two source sets, next to `src/main`:
 
 ```
-backend/src/test/java/com/carrefour/discountkata/
-├── discount/
-│   ├── domain/
-│   │   ├── model/
-│   │   │   ├── MoneyTest.java
-│   │   │   ├── CartTest.java
-│   │   │   ├── CartItemTest.java
-│   │   │   └── DiscountCodeTest.java
-│   │   └── policy/
-│   │       └── DiscountPolicyTest.java
-│   ├── application/
-│   │   └── service/
-│   │       └── ApplyDiscountServiceTest.java          Mockito, ports mocked
-│   └── adapter/
-│       ├── in/
-│       │   └── web/
-│       │       ├── DiscountControllerSecurityTest.java   @WebMvcTest + Spring Security Test
-│       │       ├── DiscountApiIT.java                    REST Assured, end to end
-│       │       └── OpenApiDocumentationIT.java           [TECH-1] /v3/api-docs
-│       └── out/
-│           └── persistence/
-│               └── DiscountPersistenceIT.java         Flyway + JPA on PostgreSQL
-└── support/
-    ├── PostgresTestConfiguration.java       Testcontainers PostgreSQL (@ServiceConnection)
-    └── TestJwtFactory.java                  signs test tokens with a generated RSA key
+backend/src/
+├── main/                                    production code
+├── test/                                    unit and web-layer tests, no infrastructure (task `test`)
+│   ├── java/com/carrefour/discountkata/
+│   │   ├── discount/
+│   │   │   ├── domain/
+│   │   │   │   ├── model/                   MoneyTest, ProductTest, CartTest, CartItemTest, DiscountCodeTest
+│   │   │   │   └── policy/                  DiscountPolicyTest
+│   │   │   ├── application/service/         ApplyDiscountServiceTest (Mockito, ports mocked)
+│   │   │   └── adapter/in/web/
+│   │   │       ├── DiscountControllerSecurityTest.java   @WebMvcTest + Spring Security Test
+│   │   │       ├── dto/                     ApplyDiscountRequestValidationTest (Bean Validation)
+│   │   │       └── error/                   ApiExceptionHandlerTest (error mapping)
+│   │   └── support/                         shared with the integration tests
+│   │       ├── creator/                     ProductCreator, CartCreator, DiscountCodeCreator
+│   │       └── JsonFixtures.java            reads src/test/resources/json
+│   └── resources/json/apply-discount/       request-*.json, response-*.json
+└── integrationTest/                         integration tests, Docker required (task `integrationTest`)
+    ├── resources/application-it.yml         'it' profile (the realm file of keycloak/ is added to these resources)
+    └── java/com/carrefour/discountkata/
+        ├── discount/
+        │   └── adapter/
+        │       └── in/web/
+        │           ├── DiscountApiIT.java                REST Assured, OK and KO scenarios end to end
+        │           └── OpenApiDocumentationIT.java       [TECH-1] /v3/api-docs
+        └── support/
+            ├── PostgresTestConfiguration.java   Testcontainers PostgreSQL (@ServiceConnection)
+            └── KeycloakTestConfiguration.java   Testcontainers Keycloak with the realm of keycloak/, gets real tokens
 ```
+
+The `integrationTest` source set reuses the dependencies of `test` and sees its classes and resources (creators, JSON fixtures), so test helpers are written once.
 
 Naming rules:
-- `*Test`: unit and web-layer tests, no infrastructure, run by `test`.
-- `*IT`: integration tests that start Spring and PostgreSQL (Docker), run by `integrationTest`.
+- `src/test`, classes `*Test` and `*SecurityTest`: unit and web-layer tests, no infrastructure, run by `test`.
+- `src/integrationTest`, classes `*IT`: integration tests that start Spring and PostgreSQL (Docker), run by `integrationTest`. The folder, not the suffix, decides which task runs a test; the suffix keeps the intent visible.
 - Classes are named by their role in the architecture: `*UseCase` (inbound port), `*Port` (outbound port), `*Command` / `*Result` (CQRS input and output of a use case), `*Service` (application service), `*Adapter` (outbound adapter), `*Entity` and `*JpaRepository` (persistence), `*Request` / `*Response` (REST DTOs), `*Mapper` (MapStruct), `*Configuration` (Spring).
 
 No interface without a concrete purpose: `DiscountPolicy` is a concrete domain class, not a port. One outbound adapter per port (interface segregation).
@@ -412,8 +422,10 @@ Single format:
 | 404 | `DISCOUNT_CODE_NOT_FOUND` | Unknown code |
 | 404 | `PRODUCT_NOT_FOUND` | `productId` not in the catalog |
 | 422 | `DISCOUNT_CODE_INACTIVE` | Deactivated code |
-| 422 | `DISCOUNT_CODE_EXPIRED` | Outside the validity period |
+| 422 | `DISCOUNT_CODE_NOT_YET_VALID` | Before the start of the validity period |
+| 422 | `DISCOUNT_CODE_EXPIRED` | After the end of the validity period |
 | 422 | `NO_ELIGIBLE_PRODUCT` | No eligible line |
+| 405, 415… | HTTP status name (e.g. `METHOD_NOT_ALLOWED`) | Errors raised by Spring MVC itself (wrong method, media type, unknown path) keep their status |
 | 500 | `INTERNAL_ERROR` | Unexpected error, no technical detail exposed |
 
 ### 4.3 Client data vs server data
@@ -432,11 +444,12 @@ Minimal model:
 | `discount_code` | `code` (PK, text, upper case), `percentage` (`1..100`), `active`, `starts_at` (nullable), `expires_at` (nullable) |
 | `discount_code_product` | `code` (FK), `product_id` (FK), composite PK |
 
-Migrations with **Flyway** (`db/migration`), to be confirmed (section 10). One migration creates the schema, another inserts **demo data** so the MVP can be demonstrated:
+Migrations with **Flyway** (`db/migration`), added story by story: US-1 creates `product` and `discount_code` (`V1`) and inserts the demo data (`V2`); US-2 adds `discount_code_product` (`V3`) and the demo restrictions (`V4`). Demo data, so that the MVP can be demonstrated:
 
 - `SUMMER10`: 10 %, active, restricted to some products;
 - `WELCOME5`: 5 %, active, no restriction (if the assumption of 2.3 is confirmed);
 - `EXPIRED20`: expired;
+- `FUTURE25`: not valid yet (starts in 2099);
 - `DISABLED15`: inactive.
 
 JPA/Hibernate runs with `ddl-auto=validate`: the schema is managed by Flyway only.
@@ -468,19 +481,18 @@ Measures kept from the start:
 |---|---|---|
 | Domain | JUnit 5 | Computation (nominal case, HALF_UP rounding, mixed cart, 100 %), validity (inactive, before/after dates, boundaries), no eligible product, empty restriction. No Mockito, no Spring. |
 | Application | JUnit 5 + Mockito | `ApplyDiscountService` with mocked ports: unknown code, unknown product, orchestration, fixed `Clock` |
-| Persistence integration | Testcontainers (PostgreSQL) + `@DataJpaTest`/`@SpringBootTest` | Flyway migrations, adapters, MapStruct mappings, demo data |
 | Security | `@WebMvcTest` + Spring Security Test (`jwt()` request post-processor) | 401 without or with an invalid token, 403 without `CUSTOMER`, 200 with `CUSTOMER`, public endpoints reachable. Use case mocked, no infrastructure |
-| HTTP | REST Assured + `@SpringBootTest(webEnvironment = RANDOM_PORT)` + Testcontainers | Contract of `POST /api/discounts/apply`: 200, 400, 401, 403, 404, 422, error format. Tokens are signed in the test with a generated RSA key and validated by a test `JwtDecoder`, so no Keycloak is needed |
+| HTTP | REST Assured + `@SpringBootTest(webEnvironment = RANDOM_PORT)` + Testcontainers | Contract of `POST /api/discounts/apply`: 200, 400, 401, 403, 404, 422, error format. Tokens are real: they are obtained from a Keycloak test container that imports the same realm as docker-compose, so the role mapping of the realm is proven too. Through the real database, it also proves the Flyway migrations, the demo data and the JPA mapping (including the validity dates); there is no separate persistence test |
 | API documentation | REST Assured on `/v3/api-docs` | The OpenAPI document exposes the endpoint, its request and response schemas, its error codes and the bearer security scheme |
 
 Priority goes to fast business tests (domain, application), completed by integration tests against real infrastructure. Each tool answers a precise need:
 - **JUnit 5**: domain tests, without Spring; the most numerous.
 - **Mockito**: isolates `ApplyDiscountService` from persistence; used at this level only.
-- **Testcontainers**: checks the Flyway migrations and queries against a real PostgreSQL, which an in-memory database does not guarantee.
+- **Testcontainers**: starts a real PostgreSQL (Flyway migrations and queries, which an in-memory database does not guarantee) and a real Keycloak with the project realm (`testcontainers-keycloak`), for the integration tests only.
 - **REST Assured**: checks the HTTP contract (status codes, error format), which is the one consumed by the frontend, and the published OpenAPI document.
 - **Spring Security Test**: simulates authenticated users and roles in web-layer tests without an authorization server.
 
-Unit tests and integration tests are separate Gradle tasks: classes named `*IT` (Testcontainers, Docker required) run with `integrationTest`, all other tests with `test`. JaCoCo merges the coverage of both for Sonar.
+Unit tests and integration tests are separate source sets and Gradle tasks: `src/test` runs with `test` (no infrastructure), `src/integrationTest` runs with `integrationTest` (Testcontainers, Docker required). JaCoCo merges the coverage of both for Sonar.
 
 **WireMock**: the backend calls no external service, so WireMock is **not used** (dependency not added until an external integration exists).
 
@@ -488,21 +500,27 @@ Unit tests and integration tests are separate Gradle tasks: classes named `*IT` 
 
 Prerequisites: JDK 25, Docker (PostgreSQL, Keycloak and Testcontainers).
 
-Configuration (environment variables, with development defaults in `application.yml`):
+Configuration: `application.yml` holds the shared settings; environment-specific values come from environment variables or from a Spring profile.
 
-| Variable | Purpose | Dev default |
+| Profile | File | Used for | Values |
+|---|---|---|---|
+| *(none)* | `application.yml` | Any deployed environment | Read from the environment variables below, which are **mandatory**: without them the application fails at startup instead of running with development values |
+| `local` | `application-local.yml` | A developer machine; active by default with `./gradlew :backend:bootRun` (override with `SPRING_PROFILES_ACTIVE`) | PostgreSQL and Keycloak of `docker-compose.yml`, application logs at `DEBUG` |
+| `it` | `src/integrationTest/resources/application-it.yml` | Integration tests (`@ActiveProfiles("it")`) | PostgreSQL and Keycloak started by Testcontainers; their URLs are registered at startup |
+
+| Variable | Purpose | `local` value |
 |---|---|---|
 | `DB_URL` | JDBC URL | `jdbc:postgresql://localhost:5432/discount` |
 | `DB_USER` | User | `discount` |
 | `DB_PASSWORD` | Password | `discount` |
-| `SERVER_PORT` | HTTP port | `8080` |
 | `JWT_ISSUER_URI` | Issuer of the tokens (Keycloak realm) | `http://localhost:8180/realms/discount` |
+| `SERVER_PORT` | HTTP port (optional) | `8080` |
 
 Commands (Gradle Groovy multi-project, all run from the repository root):
 
 ```
 docker compose up -d              # PostgreSQL and Keycloak
-./gradlew :backend:bootRun
+./gradlew :backend:bootRun        # 'local' profile
 ./gradlew :backend:test
 ./gradlew :backend:build              # compile, unit and integration tests, format check
 ./gradlew :backend:integrationTest    # integration tests only (Docker required)
@@ -543,7 +561,7 @@ Order of the features: by priority, as defined in section 11.0. The REST contrac
 3. **Single currency EUR**. (proposed: yes)
 4. **Demo codes** seeded by migration (section 5). (proposed: yes)
 5. **Price origin**: catalog in the database, controlled by the server. (proposed: yes)
-6. **Lombok** limited to boilerplate of services and adapters (not on the domain). (decided)
+6. **Lombok** limited to boilerplate: services, adapters and JPA entities (rules in section 12), never on the domain. (decided)
 7. **Language**: everything in English — docs, comments, logs, API messages, commits. (decided)
 8. **Security in the MVP**: JWT Resource Server, Keycloak as issuer, role `CUSTOMER` (section 6). (decided)
 
@@ -557,7 +575,7 @@ Priorities follow the brief: the MVP is mandatory and comes first; the other req
 
 | Priority | Ticket | Source | Why this rank |
 |---|---|---|---|
-| **P0** | FEAT-1 — Apply a discount code to a cart (US-1, US-2) | Brief, MVP | Both user stories; mandatory and must be demonstrated |
+| **P0** | FEAT-1 — Apply a discount code to a cart (US-1 DISCOUNT-10001, US-2 DISCOUNT-10002) | Brief, MVP | Both user stories; mandatory and must be demonstrated |
 | **P1** | FEAT-2 — Vue.js frontend | Brief, requirements | Vue.js is a requirement of the brief; depends on FEAT-1 |
 | **P2** | TECH-1 — API documentation (Springdoc OpenAPI) | Project constraints | Cheap and helps the reviewer try the API, but not asked by the brief |
 | **P3** | BONUS-1 — Business metrics (section 13.2) | Bonus | Technical bonus |
@@ -567,9 +585,13 @@ The brief recommends spending no more than two hours. This plan already exceeds 
 
 ### FEAT-1 — Apply a discount code to a cart (`POST /api/discounts/apply`)
 
-Covers story 1 and story 2 of the brief (they share the same endpoint and the same domain model; the restriction logic is part of the model).
+Covers story 1 and story 2 of the brief. It is delivered user story by user story; each story goes through every layer with its tests and is committed in 3 to 5 commits named after its Jira ticket. Security is part of US-1.
 
-**US-1** — As a customer, I apply a discount code before checkout and the discount is applied to my cart.
+Status legend for the tests: **Run** = executed and green on the development machine; **Written** = compiles but not executed (integration tests need Docker, not available on the development machine; they run in CI).
+
+#### US-1 — DISCOUNT-10001 — Apply a discount code to my cart
+
+As a customer, I apply a discount code before checkout and the discount is applied to my cart. I must be authenticated with the `CUSTOMER` role.
 
 | Id | Acceptance criterion |
 |---|---|
@@ -578,12 +600,31 @@ Covers story 1 and story 2 of the brief (they share the same endpoint and the sa
 | AC-1.3 | The discount is rounded HALF_UP to 2 decimals, once, on the total eligible amount (e.g. 10 % of 7.98 → 0.80) |
 | AC-1.4 | Unknown code → 404 `DISCOUNT_CODE_NOT_FOUND` |
 | AC-1.5 | Inactive code → 422 `DISCOUNT_CODE_INACTIVE` |
-| AC-1.6 | Code before `startsAt` or from `expiresAt` on → 422 `DISCOUNT_CODE_EXPIRED` (`startsAt` inclusive, `expiresAt` exclusive) |
+| AC-1.6 | Code before `startsAt` → 422 `DISCOUNT_CODE_NOT_YET_VALID`; from `expiresAt` on → 422 `DISCOUNT_CODE_EXPIRED` (`startsAt` inclusive, `expiresAt` exclusive) |
 | AC-1.7 | Empty cart, quantity outside 1..99, duplicated product or blank code → 400 `VALIDATION_ERROR` |
 | AC-1.8 | Unknown product → 404 `PRODUCT_NOT_FOUND` |
 | AC-1.9 | Prices come from the server catalog; the request carries no price |
+| AC-S.1 | No token → 401 `UNAUTHORIZED` |
+| AC-S.2 | Malformed, expired or wrongly signed token → 401 `UNAUTHORIZED` |
+| AC-S.3 | Valid token without the `CUSTOMER` role → 403 `FORBIDDEN` |
+| AC-S.4 | Valid token with the `CUSTOMER` role → the request is processed |
+| AC-S.5 | `/actuator/health` and the OpenAPI documentation are reachable without a token |
 
-**US-2** — As a customer, a discount code only applies to the products it targets.
+Until US-2, every line of the cart is eligible: `eligibleAmount` equals `subtotal`, so the response does not expose `eligibleAmount` nor `lines[].eligible` yet; US-2 adds them (final contract in section 4.1).
+
+| Commit | Content | Status |
+|---|---|---|
+| `[FEATURE] DISCOUNT-10001 add discount domain model and computation` | Domain exceptions, model, `DiscountPolicy`, test creators, domain unit tests | Coded, tests run |
+| `[FEATURE] DISCOUNT-10001 add apply discount use case` | Command, result, ports, `ApplyDiscountService`, Mockito unit test | Coded, tests run |
+| `[FEATURE] DISCOUNT-10001 persist products and discount codes` | JPA entities, repositories, mapper, adapters, Flyway `V1` schema and `V2` demo data | Coded, proven end to end by the API IT (written) |
+| `[FEATURE] DISCOUNT-10001 expose apply discount endpoint with error handling` | DTOs, web mapper, `DiscountController`, `ApiExceptionHandler`, `BeanConfiguration`, DTO validation and error handler unit tests | Coded, tests run |
+| `[FEATURE] DISCOUNT-10001 secure apply discount endpoint with CUSTOMER role` | `SecurityConfiguration`, `SecurityErrorHandler`, security tests, Keycloak and PostgreSQL test configurations, JSON fixtures, end-to-end API IT (OK and KO scenarios) | Coded, security tests run, IT written |
+
+Remaining for US-1: README demo requests (FEAT-1 task) and running the integration tests in CI.
+
+#### US-2 — DISCOUNT-10002 — Restrict a discount code to certain products
+
+As a customer, a discount code only applies to the products it targets.
 
 | Id | Acceptance criterion |
 |---|---|
@@ -592,45 +633,18 @@ Covers story 1 and story 2 of the brief (they share the same endpoint and the sa
 | AC-2.3 | A code without restriction applies to every product (assumption 2.3) |
 | AC-2.4 | A 100 % code on eligible lines gives `total = subtotal − eligibleAmount`, never negative |
 
-**Security** — As a customer, I must be authenticated with the `CUSTOMER` role to apply a discount code.
-
-| Id | Acceptance criterion |
-|---|---|
-| AC-S.1 | No token → 401 `UNAUTHORIZED` |
-| AC-S.2 | Malformed, expired or wrongly signed token → 401 `UNAUTHORIZED` |
-| AC-S.3 | Valid token without the `CUSTOMER` role → 403 `FORBIDDEN` |
-| AC-S.4 | Valid token with the `CUSTOMER` role → the request is processed (AC-1.x, AC-2.x apply) |
-| AC-S.5 | `/actuator/health` and the OpenAPI documentation are reachable without a token |
-
-**Technical tasks**
-
-| Task | Layer | Status |
-|---|---|---|
-| Business exceptions | domain | Not started |
-| Model (`Money`, `Product`, `Cart`, `CartItem`, `DiscountCode`, `DiscountResult`) and `DiscountPolicy` | domain | Not started |
-| `ApplyDiscountCommand`, `CartItemCommand`, `ApplyDiscountResult` | application | Not started |
-| Ports `ApplyDiscountUseCase`, `LoadDiscountCodePort`, `LoadProductsPort` | application | Not started |
-| `ApplyDiscountService` | application | Not started |
-| JPA entities, repositories, MapStruct mapper, adapters for code and products | adapter/out | Not started |
-| Flyway migrations (schema and demo data) | resources | Not started |
-| `DiscountController`, DTOs, MapStruct mapper, exception handler | adapter/in | Not started |
-| Bean configuration (`Clock`, `DiscountPolicy`, services) | shared/config | Not started |
-| `SecurityConfiguration` (rules of section 6, 401/403 in the error format) | shared/config | Not started |
-| Keycloak in `docker-compose` with an imported `discount` realm (role, users, `roles` mapper) | infra | Coded, not run (no Docker on the development machine) |
-| README: launch instructions and demo requests for each acceptance criterion | docs | Not started |
-| Tests (see table below) | all | Not started |
+Planned commits (3 to 5): domain eligibility (`DiscountCode` eligible products, `NoEligibleProductException`, policy on eligible lines), persistence of the restrictions (Flyway `V3` table `discount_code_product` and `V4` demo restrictions), contract update (`eligibleAmount`, `lines[].eligible`, 422 mapping) with its tests. Status: Not started.
 
 **Tests proving the acceptance criteria**
 
-| Level | Covers |
+| Category | Covers |
 |---|---|
-| Domain (JUnit 5) | AC-1.1, 1.2 (normalize), 1.3, 1.5, 1.6 (boundaries), 2.1, 2.2, 2.3, 2.4, cart invariants (1.7) |
-| Application (Mockito) | AC-1.4, 1.8, orchestration of ports |
-| Security (`@WebMvcTest` + Spring Security Test) | AC-S.1 to AC-S.5 |
-| Persistence (Testcontainers, if a container runtime is available) | Flyway migrations, loading of code with its eligible products |
-| HTTP (REST Assured) | AC-1.1, 1.4–1.9, 2.1–2.2, AC-S.1, S.3, S.4 end to end, error format |
-
-**Commit**: `[feature] apply a discount code to a cart`
+| Unit — domain | AC-1.1, 1.2, 1.3, 1.5, 1.6 (boundaries), cart invariants of AC-1.7; US-2: AC-2.1 to 2.4 |
+| Unit — use case (Mockito) | AC-1.4, 1.8, batch loading of products |
+| Unit — DTO validation and error mapping | AC-1.7 (blank code, empty cart, quantity, product id), status and code of every business error |
+| Security (`@WebMvcTest`) | AC-S.1 to AC-S.4 |
+| Integration — API (REST Assured) | One OK scenario (full response compared with a JSON fixture) and one KO scenario covering AC-1.4 to 1.8, AC-S.1, S.3; AC-S.5. Also proves Flyway, demo data and JPA mapping |
+| Documentation (TECH-1) | AC-T1.x |
 
 **Priority**: P0.
 
@@ -678,13 +692,14 @@ Required by the brief. Specified in a dedicated document once FEAT-1 is done and
 
 **Code style**
 - Immutable objects: `record`, `final` fields, defensive copies (`List.copyOf`). No setters.
+- Local variables use `var` when the type is visible on the right-hand side: constructor (`new`), literal, factory named after its type (`Money.of`, `ApplyDiscountResult.from`, `Instant.now()`, `builder()`), test creator (`CartCreator.coffeeAndBaguette()`). The type stays explicit when it only comes from a method signature (`Optional<DiscountCode> code = port.loadByCode(…)`, `DiscountResult result = policy.apply(…)`), or when `var` would change the inferred type (`List<CartItem> items = List.of()`).
 - Invariants are checked in constructors: an invalid object cannot exist.
 - Constructor injection only. No field injection, no `@Autowired` on fields.
 - Money is only handled through `Money` in the domain and application layers (never `double`/`float`). Raw `BigDecimal` only appears at the boundaries: REST DTOs (JSON) and JPA entities (`NUMERIC` columns).
 - Time comes from an injected `Clock`.
 - Absence is expressed with `Optional`; methods never return `null` collections.
 - Business errors are unchecked exceptions from the sealed `DiscountException`; the HTTP mapping lives in the web adapter only. Data corruption (invalid price, percentage out of range) raises `IllegalArgumentException` and ends as a 500.
-- MapStruct only maps between boundary types; Lombok is limited to `@RequiredArgsConstructor` and `@Slf4j` (never on domain models).
+- MapStruct only maps between boundary types. Lombok is limited to `@RequiredArgsConstructor` and `@Slf4j` on services and adapters, and to `@Getter` + `@NoArgsConstructor(access = PROTECTED)` on JPA entities (the constructor JPA requires, not usable by the code). Never on domain models, and never `@Data`, `@Setter` or `@EqualsAndHashCode` on entities (mutability, and `equals`/`hashCode` over lazy relations break JPA).
 - Formatting is enforced by Spotless with the Eclipse formatter (tabs, as generated by Spring Initializr): `spotlessCheck` in CI, `spotlessApply` locally; package-by-feature (`discount`), hexagonal inside.
 - English everywhere: identifiers, comments, logs, API messages, commit messages.
 - Comments explain a *why* or a non-obvious rule, never what the code already says.
@@ -728,7 +743,7 @@ Only metrics that answer a business question are recorded. Technical metrics (HT
 
 | Metric | Type | Tags | Business question |
 |---|---|---|---|
-| `discount.applications` | Counter | `outcome` = `applied` or `rejected`; `reason` = error code when rejected (`DISCOUNT_CODE_NOT_FOUND`, `DISCOUNT_CODE_INACTIVE`, `DISCOUNT_CODE_EXPIRED`, `NO_ELIGIBLE_PRODUCT`) | How often do customers use a code successfully, and why are codes refused? A rise of `NO_ELIGIBLE_PRODUCT` points to a badly targeted promotion; a rise of `DISCOUNT_CODE_EXPIRED` to a code still advertised after its end date. |
+| `discount.applications` | Counter | `outcome` = `applied` or `rejected`; `reason` = error code when rejected (`DISCOUNT_CODE_NOT_FOUND`, `DISCOUNT_CODE_INACTIVE`, `DISCOUNT_CODE_NOT_YET_VALID`, `DISCOUNT_CODE_EXPIRED`, `NO_ELIGIBLE_PRODUCT`) | How often do customers use a code successfully, and why are codes refused? A rise of `NO_ELIGIBLE_PRODUCT` points to a badly targeted promotion; a rise of `DISCOUNT_CODE_EXPIRED` to a code still advertised after its end date. |
 | `discount.amount` | Distribution summary (base unit EUR) | `code` | How much discount is granted, in total and per code? |
 
 Rules:
@@ -740,17 +755,42 @@ Rules:
 
 ### 13.3 Errors and API
 - Single error format (section 4.2), stable error codes, no technical detail in 500 responses.
+- One `@RestControllerAdvice`, `ApiExceptionHandler`, extending Spring's `ResponseEntityExceptionHandler`: business exceptions are mapped by an exhaustive `switch` on the sealed `DiscountException`; Spring MVC errors (validation, unreadable body, wrong method or media type, unknown path) keep their status and headers (e.g. `Allow` on a 405) and are rewritten in the API format by overriding `handleExceptionInternal`; anything else is a 500. Security errors (401 / 403) happen in the filter chain, before any controller, so `SecurityErrorHandler` writes them in the same format.
+- A code that has not started yet and an expired code are two distinct errors, so that the client can tell the customer the right reason.
 - Validate the HTTP format at the edge (Bean Validation) and the business invariants in the domain; never duplicate a rule.
 
 ### 13.4 Tests
-- Pyramid: many fast domain tests, fewer application tests, few integration and HTTP tests.
-- Test names state the behavior (`shouldRejectCode_whenExpired`), Arrange–Act–Assert layout, one behavior per test, a fixed `Clock` for date rules.
+
+**Categories**
+
+| Category | Suffix / task | Scope | Infrastructure |
+|---|---|---|---|
+| Unit (TU) | `src/test`, `*Test` / `test` | Domain, use case (Mockito), validation of the request DTOs (Bean Validation without Spring), error mapping of `ApiExceptionHandler` | None |
+| Security | `src/test`, `*SecurityTest` / `test` | Authorization rules, 401 / 403 format, on the web layer (`@WebMvcTest`, use case mocked) | None |
+| Integration (IT) | `src/integrationTest`, `*IT` / `integrationTest` | Persistence with Flyway, API end to end with the real security configuration | Docker (Testcontainers) |
+| Documentation | `src/integrationTest`, `*DocumentationIT` / `integrationTest` | Published OpenAPI document (TECH-1) | Docker |
+
+**Writing rules**
+- Every test follows **given / when / then**: three blocks marked by `// given`, `// when`, `// then` and separated by an empty line. When the action is the assertion (an expected exception), the last block is `// when / then`.
+- One behavior per test; the name states it: `shouldRejectCode_whenExpired`.
+- Integration tests only call the HTTP endpoints, as a client would, and are written as coarse scenarios: one OK scenario per endpoint (full response compared with its JSON fixture) and one parameterized KO scenario whose rows are the rejected requests (fixture, caller, expected status and code). They prove that the whole chain works (Spring MVC, security, use case, JPA, Flyway, PostgreSQL); business rules are proven by the unit tests and are not retested one by one.
+- Minimum relevant set: a test exists only if it checks a rule, a boundary or a branch that no other test covers. No test for getters, records, generated code (MapStruct) or arithmetic already proven by a business test. Unit tests cover all the hand-written code of the domain, the use case, the web layer and the security; persistence and Spring wiring are covered by the integration tests only.
+- Several assertions on one result use AssertJ **soft assertions** (`assertSoftly`), so that every failing assertion is reported at once.
+- Mockito interactions are checked with `verify` / `verifyNoInteractions` **at the end of the then block**, after the assertions on the result; stubs use the BDD style (`given(...).willReturn(...)`).
+- Date rules use a fixed `Clock`; no test depends on the current date, except the demo data of the integration tests (`EXPIRED20` expired in 2025).
 - Every acceptance criterion of section 11 has at least one test.
+
+**Test data**
+- Domain objects come from **creators** (Object Mother pattern) in `support/creator`: `ProductCreator`, `CartCreator`, `DiscountCodeCreator`. They reuse the values of the demo catalog so that expected amounts stay readable (2 × 3.99 + 2.50 = 10.48).
+- HTTP payloads are **JSON fixtures** in `src/test/resources/json/<use case>/` (`request-*.json`, `response-*.json`), read by `JsonFixtures`. A complete response is compared with its fixture with JSONAssert in strict mode.
+- A data generation library was evaluated: **Instancio** (the most used in Java projects today, supports records). It is not used: these tests need exact business values (prices, percentages, expected totals), and random values would have to be constrained field by field to respect the domain invariants, which makes the tests longer and less readable than a creator. It becomes relevant for property-based tests or large data sets.
+
+**Tools**
 - A tool is used only if it answers a real need (section 7).
 
 ### 13.5 Git and delivery
-- One commit per feature or endpoint, never per package; a commit leaves the build compiling.
-- Message format: `[feature] ...`, `[init]`, `[build]`, `[docs]`, `[test]`, `[refactor]`, imperative mood, in English.
+- Work is committed by user story, never per package: 3 to 5 commits per story, each one leaving the build compiling and its tests green.
+- Message format: `[FEATURE] DISCOUNT-<Jira number> <what this part of the story does>` for a story, `[CORE] <what>` for setup, build, CI/CD and documentation; imperative mood, in English.
 - The root `README.md` only documents what is actually coded and tested.
 
 ## 14. Java 25
