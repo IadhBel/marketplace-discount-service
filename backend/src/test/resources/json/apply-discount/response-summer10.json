@@ -1,0 +1,12 @@
+{
+  "code": "SUMMER10",
+  "discountPercentage": 10,
+  "currency": "EUR",
+  "lines": [
+    { "productId": "P-001", "name": "Ground coffee 250 g", "unitPrice": 3.99, "quantity": 2, "lineTotal": 7.98 },
+    { "productId": "P-003", "name": "Traditional baguette", "unitPrice": 2.50, "quantity": 1, "lineTotal": 2.50 }
+  ],
+  "subtotal": 10.48,
+  "discountAmount": 1.05,
+  "total": 9.43
+}

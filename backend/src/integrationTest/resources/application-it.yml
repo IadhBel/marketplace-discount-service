@@ -1,0 +1,19 @@
+# Integration tests: PostgreSQL and Keycloak run in Testcontainers.
+# The values below only replace the environment variables of application.yml, which are not set during the tests;
+# the real ones are provided at startup by the containers.
+spring:
+  datasource:
+    # Replaced by the connection of the PostgreSQL container (@ServiceConnection in PostgresTestConfiguration)
+    url: jdbc:postgresql://postgres.it.invalid:5432/discount
+    username: discount
+    password: discount
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Replaced by the issuer of the Keycloak container (KeycloakTestConfiguration)
+          issuer-uri: http://keycloak.it.invalid/realms/discount
+
+logging:
+  level:
+    com.carrefour.discountkata: DEBUG

@@ -27,8 +27,21 @@ ext {
 	restAssuredVersion = '6.1.0'
 }
 
+// Integration tests live in src/integrationTest, next to src/main and src/test. They reuse the test dependencies and the
+// shared test helpers of src/test (creators, JSON fixtures).
+sourceSets {
+	integrationTest {
+		compileClasspath += sourceSets.main.output + sourceSets.test.output
+		runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+		// Same Keycloak realm as docker-compose, imported by the Keycloak test container
+		resources.srcDir rootProject.file('keycloak')
+	}
+}
+
 configurations {
 	mockitoAgent
+	integrationTestImplementation.extendsFrom testImplementation
+	integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
 
 dependencies {
@@ -59,6 +72,7 @@ dependencies {
 	testImplementation 'org.testcontainers:testcontainers-junit-jupiter'
 	testImplementation 'org.testcontainers:testcontainers-postgresql'
 	testImplementation "io.rest-assured:rest-assured:${restAssuredVersion}"
+	integrationTestImplementation 'com.github.dasniko:testcontainers-keycloak:4.4.0'
 	testCompileOnly 'org.projectlombok:lombok'
 	testAnnotationProcessor 'org.projectlombok:lombok'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -67,7 +81,7 @@ dependencies {
 	}
 }
 
-tasks.withType(JavaCompile).configureEach {
+tasks.named('compileJava') {
 	options.compilerArgs += ['-Amapstruct.defaultComponentModel=spring']
 }
 
@@ -83,22 +97,21 @@ tasks.withType(Test).configureEach {
 	jvmArgs += "-javaagent:${configurations.mockitoAgent.asPath}"
 }
 
-// Unit tests run without any infrastructure; classes named *IT need Docker (Testcontainers).
-tasks.named('test') {
-	exclude '**/*IT.class'
-}
-
 def integrationTest = tasks.register('integrationTest', Test) {
-	description = 'Runs the integration tests (*IT). Requires a Docker environment for Testcontainers.'
+	description = 'Runs the integration tests of src/integrationTest. Requires a Docker environment for Testcontainers.'
 	group = 'verification'
-	testClassesDirs = sourceSets.test.output.classesDirs
-	classpath = sourceSets.test.runtimeClasspath
-	include '**/*IT.class'
+	testClassesDirs = sourceSets.integrationTest.output.classesDirs
+	classpath = sourceSets.integrationTest.runtimeClasspath
 	shouldRunAfter tasks.named('test')
 }
 
 tasks.named('check') {
 	dependsOn integrationTest
+}
+
+// ./gradlew :backend:bootRun starts with the 'local' profile unless SPRING_PROFILES_ACTIVE is set.
+tasks.named('bootRun') {
+	systemProperty 'spring.profiles.active', System.getenv('SPRING_PROFILES_ACTIVE') ?: 'local'
 }
 
 jacoco {
